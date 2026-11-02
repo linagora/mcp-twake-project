@@ -4,6 +4,16 @@ All notable changes to mcp-twake-project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-02
+
+### Added
+- `transfer_task` and `preview_task_transfer`: move a task and its subtasks to another board, after seeing what would be dropped (assignees who are not members of the target board) or created there (labels by name).
+- Sharing: `get_board_sharing` (members with their role, pending invitations), `find_people_to_invite`, `invite_to_board`, `cancel_board_invite`, `set_board_member_role`, `remove_board_member`. Twake Project shares a board through its project: a personal project, or a project managed by a Twake Space, stays private, and the server explains the HTTP 403 it then gets.
+- `get_board_sharing` renders members and invitations instead of raw JSON.
+
+### Changed
+- 47 tools (21 read-only, 26 writes approved by the user).
+
 ## [0.1.0] - 2026-11-02
 
 ### Added

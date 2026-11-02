@@ -15,6 +15,18 @@ export interface ToolContext {
   identify: () => Promise<Identity>;
 }
 
+interface SharingMember {
+  userId: string;
+  email: string;
+  name: string | null;
+  role: 'viewer' | 'editor' | 'admin';
+}
+interface SharingInvite {
+  id: string;
+  email: string;
+  role: 'viewer' | 'editor' | 'admin';
+}
+
 const ok = (text: string) => ({ content: [{ type: 'text' as const, text }] });
 const fail = (text: string) => ({ content: [{ type: 'text' as const, text }], isError: true });
 
@@ -461,14 +473,47 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
 
   server.registerTool(
     'get_board_sharing',
-    { title: 'Board sharing', description: 'The people and pending invitations of a board.', inputSchema: { board: boardArg }, annotations: READ },
+    { title: 'Board sharing', description: 'The members of a board with their role, and the pending invitations.', inputSchema: { board: boardArg }, annotations: READ },
     async (a: { board: string }) => {
       try {
         const b = await board(a.board);
-        const out = await api.request<{ people?: unknown[]; sharing?: unknown[]; invites?: unknown[] }>('GET', `/boards/${b.id}/sharing`);
-        return ok(`${boardLabel(b)} sharing:\n${JSON.stringify(out, null, 1).slice(0, 3000)}`);
+        const out = await api.request<{ members?: SharingMember[]; invites?: SharingInvite[] }>('GET', `/boards/${b.id}/sharing`);
+        const members = out.members ?? [];
+        const invites = out.invites ?? [];
+        const lines = [`${boardLabel(b)} · ${members.length} member${members.length === 1 ? '' : 's'}`];
+        for (const m of members) lines.push(`- ${m.name || m.email}${m.name ? ` <${m.email}>` : ''} · ${m.role} [userId ${m.userId}]`);
+        if (invites.length) {
+          lines.push('', `Pending invitations (${invites.length}):`);
+          for (const i of invites) lines.push(`- ${i.email} · ${i.role} [invite ${i.id}]`);
+        }
+        return ok(lines.join('\n'));
       } catch (e) {
         return refusal(e, 'get_board_sharing');
+      }
+    },
+  );
+
+  server.registerTool(
+    'find_people_to_invite',
+    {
+      title: 'Find people to invite',
+      description: 'Search the people of the organisation who could be added to a board, by name or e-mail (two characters at least).',
+      inputSchema: { board: boardArg, query: z.string().min(2).max(254) },
+      annotations: READ,
+    },
+    async (a: { board: string; query: string }) => {
+      try {
+        const b = await board(a.board);
+        const out = await api.request<{ people?: (SharingMember & { member?: boolean })[] }>('GET', `/boards/${b.id}/sharing/people`, { query: { q: a.query } });
+        const people = out.people ?? [];
+        if (!people.length) return ok(`Nobody matches "${a.query}".`);
+        return ok(
+          `${people.length} person(s):\n${people
+            .map((p) => `- ${p.name || p.email}${p.name ? ` <${p.email}>` : ''}${p.member ? ' · already a member' : ''} [userId ${p.userId}]`)
+            .join('\n')}`,
+        );
+      } catch (e) {
+        return refusal(e, 'find_people_to_invite');
       }
     },
   );
@@ -1115,6 +1160,185 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
         return ok('Notifications marked as read.');
       } catch (e) {
         return refusal(e, 'mark_notifications_read');
+      }
+    },
+  );
+
+  server.registerTool(
+    'preview_task_transfer',
+    {
+      title: 'Preview a transfer',
+      description: 'What moving a task to another board would drop or create (assignees who are not on the target board, labels created there), without moving it.',
+      inputSchema: { board: boardArg, task: taskArg, target_board: z.string().min(1), target_section: z.string().optional().describe('Section of the target board (default: none).') },
+      annotations: READ,
+    },
+    async (a: { board: string; task: string; target_board: string; target_section?: string }) => {
+      try {
+        const from = await board(a.board);
+        const to = await board(a.target_board);
+        if (to.id === from.id) throw new Error('The task is already on that board.');
+        const { task: t } = await task(from, a.task);
+        const toDetail = await detail(to);
+        const sectionId = a.target_section
+          ? (toDetail.sections.find((x) => x.id === a.target_section || x.name.toLowerCase() === a.target_section!.toLowerCase())?.id ?? null)
+          : null;
+        const preview = await api.request<{ droppedAssignees: string[]; createdLabels: string[] }>('POST', `/boards/${from.id}/tasks/${t.id}/transfer/preview`, {
+          body: { boardId: to.id, sectionId },
+        });
+        const dropped = preview.droppedAssignees ?? [];
+        const created = preview.createdLabels ?? [];
+        return ok(
+          [`${t.key} → ${boardLabel(to)}${sectionId ? ` · section ${toDetail.sections.find((x) => x.id === sectionId)?.name}` : ''}`,
+            dropped.length ? `assignees dropped: ${dropped.join(', ')}` : 'no assignee dropped',
+            created.length ? `labels created there: ${created.join(', ')}` : 'no label created',
+          ].join('\n'),
+        );
+      } catch (e) {
+        return refusal(e, 'preview_task_transfer');
+      }
+    },
+  );
+
+  server.registerTool(
+    'transfer_task',
+    {
+      title: 'Move a task to another board',
+      description: 'Move a task and its subtasks to another board (they take new numbers there and keep their old keys). Use preview_task_transfer first.',
+      inputSchema: { board: boardArg, task: taskArg, target_board: z.string().min(1), target_section: z.string().optional() },
+      annotations: WRITE,
+    },
+    async (a: { board: string; task: string; target_board: string; target_section?: string }) => {
+      try {
+        const from = await board(a.board);
+        const to = await board(a.target_board);
+        if (to.id === from.id) throw new Error('The task is already on that board.');
+        const { task: t } = await task(from, a.task);
+        const toDetail = await detail(to);
+        const sectionId = a.target_section
+          ? (toDetail.sections.find((x) => x.id === a.target_section || x.name.toLowerCase() === a.target_section!.toLowerCase())?.id ?? null)
+          : null;
+        await approver.confirm({
+          action: 'Move a task to another board',
+          as: await as(),
+          board: boardLabel(from),
+          details: [
+            ['Task', `${t.key}: ${t.title}`],
+            ['To', `${boardLabel(to)}${sectionId ? ` · section ${toDetail.sections.find((x) => x.id === sectionId)?.name}` : ''}`],
+          ],
+        });
+        await api.request('POST', `/boards/${from.id}/tasks/${t.id}/transfer`, { body: { boardId: to.id, sectionId } });
+        return ok(`${t.key} moved to ${boardLabel(to)} (it has a new key there).`);
+      } catch (e) {
+        return refusal(e, 'transfer_task');
+      }
+    },
+  );
+
+  server.registerTool(
+    'invite_to_board',
+    {
+      title: 'Invite someone to a board',
+      description: 'Send an invitation to share a board, with a role.',
+      inputSchema: { board: boardArg, email: z.string().email().max(254), role: z.enum(['viewer', 'editor', 'admin']) },
+      annotations: WRITE,
+    },
+    async (a: { board: string; email: string; role: 'viewer' | 'editor' | 'admin' }) => {
+      try {
+        const b = await board(a.board);
+        await approver.confirm({ action: 'Invite someone to a board', as: await as(), board: boardLabel(b), details: [['E-mail', a.email], ['Role', a.role]] });
+        await api.request('POST', `/boards/${b.id}/invites`, { body: { email: a.email.toLowerCase(), role: a.role } });
+        return ok(`Invitation sent to ${a.email} (${a.role}) for ${boardLabel(b)}.`);
+      } catch (e) {
+        return refusal(e, 'invite_to_board');
+      }
+    },
+  );
+
+  server.registerTool(
+    'cancel_board_invite',
+    {
+      title: 'Cancel an invitation',
+      description: 'Cancel a pending invitation to a board.',
+      inputSchema: { board: boardArg, invite_id: z.string().min(1).describe('Invite id, from get_board_sharing.') },
+      annotations: DESTRUCTIVE,
+    },
+    async (a: { board: string; invite_id: string }) => {
+      try {
+        const b = await board(a.board);
+        const out = await api.request<{ invites?: SharingInvite[] }>('GET', `/boards/${b.id}/sharing`);
+        const invite = (out.invites ?? []).find((i) => i.id === a.invite_id);
+        await approver.confirm({
+          action: 'Cancel an invitation',
+          as: await as(),
+          board: boardLabel(b),
+          details: [['Invitation', invite ? `${invite.email} (${invite.role})` : a.invite_id]],
+        });
+        await api.request('DELETE', `/boards/${b.id}/invites/${a.invite_id}`);
+        return ok(`Invitation cancelled${invite ? ` for ${invite.email}` : ''}.`);
+      } catch (e) {
+        return refusal(e, 'cancel_board_invite');
+      }
+    },
+  );
+
+  server.registerTool(
+    'set_board_member_role',
+    {
+      title: 'Change the role of a member',
+      description: 'Give a member of a board another role (viewer, editor, admin).',
+      inputSchema: { board: boardArg, user_id: z.string().min(1), role: z.enum(['viewer', 'editor', 'admin']) },
+      annotations: WRITE,
+    },
+    async (a: { board: string; user_id: string; role: 'viewer' | 'editor' | 'admin' }) => {
+      try {
+        const b = await board(a.board);
+        const out = await api.request<{ members?: SharingMember[] }>('GET', `/boards/${b.id}/sharing`);
+        const m = (out.members ?? []).find((x) => x.userId === a.user_id);
+        await approver.confirm({
+          action: 'Change the role of a member',
+          as: await as(),
+          board: boardLabel(b),
+          details: [
+            ['Member', m ? `${m.name || m.email} <${m.email}>` : a.user_id],
+            ['Role', `${m?.role ?? '?'} → ${a.role}`],
+          ],
+        });
+        await api.request('PUT', `/boards/${b.id}/members/${a.user_id}`, { body: { role: a.role } });
+        return ok(`${m ? m.name || m.email : a.user_id} is now ${a.role} on ${boardLabel(b)}.`);
+      } catch (e) {
+        return refusal(e, 'set_board_member_role');
+      }
+    },
+  );
+
+  server.registerTool(
+    'remove_board_member',
+    {
+      title: 'Remove a member from a board',
+      description: 'Remove someone from a board (they lose access to its tasks).',
+      inputSchema: { board: boardArg, user_id: z.string().min(1).optional(), email: z.string().email().optional().describe('Or the e-mail of the member to remove.') },
+      annotations: DESTRUCTIVE,
+    },
+    async (a: { board: string; user_id?: string; email?: string }) => {
+      try {
+        if (!a.user_id && !a.email) throw new Error('Give a user_id or an email.');
+        const b = await board(a.board);
+        const out = await api.request<{ members?: SharingMember[] }>('GET', `/boards/${b.id}/sharing`);
+        const m = (out.members ?? []).find((x) => (a.user_id && x.userId === a.user_id) || (a.email && x.email.toLowerCase() === a.email.toLowerCase()));
+        if (!m) throw new Error(`Nobody matches ${a.user_id ?? a.email} on ${boardLabel(b)}. Call get_board_sharing.`);
+        await approver.confirm({
+          action: 'Remove a member from a board',
+          as: await as(),
+          board: boardLabel(b),
+          details: [
+            ['Member', `${m.name || m.email} <${m.email}> (${m.role})`],
+            ['Effect', 'loses access to this board and its tasks'],
+          ],
+        });
+        await api.request('DELETE', `/boards/${b.id}/members/${m.userId}`);
+        return ok(`${m.name || m.email} removed from ${boardLabel(b)}.`);
+      } catch (e) {
+        return refusal(e, 'remove_board_member');
       }
     },
   );

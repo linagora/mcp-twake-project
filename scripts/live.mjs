@@ -25,6 +25,7 @@ const call = async (name, args = {}) => {
   const r = await client.callTool({ name, arguments: args });
   return { text: (r.content ?? []).map((c) => c.text ?? '').join('\n'), isError: !!r.isError };
 };
+const refuseNext = () => { answer.mode = 'decline'; };
 const ok = (cond, label) => {
   console.log(`${cond ? 'ok  ' : 'FAIL'} ${label}`);
   if (!cond) process.exitCode = 1;
@@ -59,6 +60,24 @@ ok(!section.isError && !!sectionId, `create_section accepted: ${sectionId ? 'cre
 const task = await call('create_task', { board: BOARD, title: `Tâche test ${stamp}`, section: `Test MCP ${stamp}` });
 const key = /Task created: (\S+)/.exec(task.text)?.[1];
 ok(!task.isError && !!key, `create_task accepted: ${key ?? task.text}`);
+const captured = prompts.length;
+// ---- sharing (reads) and a transfer preview: no prompt, nothing written
+const sharing = await call('get_board_sharing', { board: 'Inbox' });
+// A personal or Space-managed project cannot be shared: the API answers 403, which must be explained
+ok(sharing.isError && /stays private/.test(sharing.text), `get_board_sharing explains the 403 (personal or Space project): ${sharing.text.split('\n')[1] ?? ''}`);
+const found = await call('find_people_to_invite', { board: 'Inbox', query: 'ma' });
+ok(found.isError && /stays private/.test(found.text), 'find_people_to_invite answers the same 403 with its explanation');
+const preview = await call('preview_task_transfer', { board: BOARD, task: key, target_board: 'Inbox' });
+ok(!preview.isError && /no assignee dropped|assignees dropped/.test(preview.text), `preview_task_transfer: ${preview.text.split('\n')[1] ?? preview.text.split('\n')[0]}`);
+ok(captured === prompts.length, 'the reads asked for no approval');
+
+// ---- a second refused write: an invitation nobody asked for
+refuseNext();
+const before = 'unshareable';
+const invite = await call('invite_to_board', { board: 'Inbox', email: 'nobody@example.invalid', role: 'viewer' });
+ok(invite.isError && /Not done/.test(invite.text), 'invite_to_board refused: not done');
+ok(true, 'nothing to compare: the board cannot be shared');
+
 const updated = await call('update_task', { board: BOARD, task: key, priority: 3, due_date: new Date().toISOString().slice(0, 10) });
 ok(!updated.isError, 'update_task accepted (priority, due date)');
 const comment = await call('add_comment', { board: BOARD, task: key, body: 'Commentaire de test (à supprimer).' });

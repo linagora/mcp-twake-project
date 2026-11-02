@@ -34,6 +34,9 @@ export class ProjectError extends Error {
 function hintFor(status: number, code: string, path: string): string | undefined {
   if (status === 401) return 'The access token is invalid or expired, or the SSO does not accept the audience "twake-projects" for this client.';
   if (status === 403) {
+    if (/\/sharing|\/invites|\/members\//.test(path)) {
+      return 'Twake Project shares a board through its project: a personal project, or a project managed by a Twake Space, stays private. Create a project in Twake Project itself to invite people.';
+    }
     if (code === 'forbidden' || code === 'not_member') return 'Your role on this board does not allow it (viewer, editor or admin).';
     return 'Twake Project refused this action for your account.';
   }

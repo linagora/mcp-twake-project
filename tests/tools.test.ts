@@ -44,6 +44,14 @@ class FakeApi {
     if (method === 'POST' && path === '/boards') return { id: 'b9', name: (opts.body as { name: string }).name, keyPrefix: 'NEW' };
     if (path === '/boards') return { boards: BOARDS };
     if (path === '/boards/b1') return BOARD;
+    if (path === '/boards/b2') return { ...BOARD, id: 'b2', name: 'Inbox', keyPrefix: 'INBOX', inbox: true, sections: [], tasks: [] };
+    if (path === '/boards/b1/sharing') return {
+      members: [{ userId: 'u1', email: 'alice.martin@example.com', name: 'Alice MARTIN', role: 'admin' }, { userId: 'u2', email: 'bob.durand@example.com', name: 'Bob DURAND', role: 'editor' }],
+      invites: [{ id: 'i1', email: 'chloe.petit@example.com', role: 'viewer' }],
+    };
+    if (path === '/boards/b1/sharing/people') return { people: [{ userId: 'u3', email: 'chloe.petit@example.com', name: 'Chloé PETIT', role: 'viewer' }] };
+    if (path === '/boards/b1/tasks/t1/transfer/preview') return { droppedAssignees: ['bob.durand@example.com'], createdLabels: ['urgent'] };
+    if (path === '/boards/b1/tasks/t1/transfer') return { ok: true };
     if (path === '/projects') return { projects: [{ id: 'p1', name: 'Projet', personal: false, managed: false, role: 'admin' }] };
     if (path === '/my-tasks') return { tasks: [{ task: TASK, boardId: 'b1', boardName: 'Projet' }] };
     if (path.startsWith('/search')) return { tasks: [{ task: TASK, boardId: 'b1', boardName: 'Projet', match: { field: 'title', text: 'Écrire la note' } }] };
@@ -262,12 +270,79 @@ describe('writes are approved first', () => {
     expect(writes()[0].body).toEqual({ name: 'Nouveau', keyPrefix: 'NEW', projectId: 'p1' });
   });
 
+  it('renders the sharing of a board with roles and invitations', async () => {
+    await connect('accept');
+    const r = await call('get_board_sharing', { board: 'PROJ' });
+    expect(r.text).toContain('2 members');
+    expect(r.text).toContain('Alice MARTIN <alice.martin@example.com> · admin [userId u1]');
+    expect(r.text).toContain('Pending invitations (1)');
+    expect(r.text).toContain('chloe.petit@example.com · viewer [invite i1]');
+  });
+
+  it('finds people to invite', async () => {
+    await connect('accept');
+    const r = await call('find_people_to_invite', { board: 'PROJ', query: 'chloe' });
+    expect(r.text).toContain('Chloé PETIT <chloe.petit@example.com>');
+    expect(api.calls.at(-1)?.query).toEqual({ q: 'chloe' });
+  });
+
+  it('previews a transfer without moving anything', async () => {
+    await connect('accept');
+    const r = await call('preview_task_transfer', { board: 'PROJ', task: 'PROJ-1', target_board: 'INBOX' });
+    expect(r.text).toContain('assignees dropped: bob.durand@example.com');
+    expect(r.text).toContain('labels created there: urgent');
+    expect(writes()).toEqual([{ method: 'POST', path: '/boards/b1/tasks/t1/transfer/preview', body: { boardId: 'b2', sectionId: null }, query: undefined }]);
+    expect(prompts).toHaveLength(0);
+  });
+
+  it('transfers a task once approved', async () => {
+    await connect('accept');
+    const r = await call('transfer_task', { board: 'PROJ', task: 'PROJ-1', target_board: 'INBOX' });
+    expect(r.text).toContain('moved to Inbox (INBOX)');
+    expect(prompts[0]).toContain('Move a task to another board');
+    expect(prompts[0]).toContain('To : Inbox (INBOX)');
+    expect(writes().at(-1)).toMatchObject({ method: 'POST', path: '/boards/b1/tasks/t1/transfer', body: { boardId: 'b2', sectionId: null } });
+  });
+
+  it('refuses to move a task to its own board', async () => {
+    await connect('accept');
+    const r = await call('transfer_task', { board: 'PROJ', task: 'PROJ-1', target_board: 'PROJ' });
+    expect(r.isError).toBe(true);
+    expect(writes()).toEqual([]);
+  });
+
+  it('invites someone, changes a role and removes a member, each time after approval', async () => {
+    await connect('accept');
+    await call('invite_to_board', { board: 'PROJ', email: 'Chloe.Petit@example.com', role: 'editor' });
+    expect(writes().at(-1)?.body).toEqual({ email: 'chloe.petit@example.com', role: 'editor' });
+    await call('set_board_member_role', { board: 'PROJ', user_id: 'u2', role: 'admin' });
+    expect(writes().at(-1)).toMatchObject({ method: 'PUT', path: '/boards/b1/members/u2', body: { role: 'admin' } });
+    const removed = await call('remove_board_member', { board: 'PROJ', email: 'bob.durand@example.com' });
+    expect(removed.text).toContain('Bob DURAND removed');
+    expect(writes().at(-1)).toMatchObject({ method: 'DELETE', path: '/boards/b1/members/u2' });
+    expect(prompts).toHaveLength(3);
+  });
+
+  it('cancels an invitation', async () => {
+    await connect('accept');
+    const r = await call('cancel_board_invite', { board: 'PROJ', invite_id: 'i1' });
+    expect(r.text).toContain('chloe.petit@example.com');
+    expect(writes().at(-1)).toMatchObject({ method: 'DELETE', path: '/boards/b1/invites/i1' });
+  });
+
+  it('removes nobody when the member does not exist', async () => {
+    await connect('accept');
+    const r = await call('remove_board_member', { board: 'PROJ', email: 'nobody@example.com' });
+    expect(r.isError).toBe(true);
+    expect(writes()).toEqual([]);
+  });
+
   it('exposes the writes with destructive annotations where they delete', async () => {
     await connect('accept');
     const tools = (await client.listTools()).tools;
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     expect(byName.trash_task.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     expect(byName.get_board.annotations).toMatchObject({ readOnlyHint: true });
-    expect(tools.length).toBeGreaterThanOrEqual(33);
+    expect(tools.length).toBe(47);
   });
 });

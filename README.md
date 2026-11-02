@@ -6,7 +6,7 @@
 
 ## What is it?
 
-`mcp-twake-project` is a [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server. MCP is the open standard that lets AI assistants (Claude Desktop, Claude Code, Hermes Agent, Cursor, VS Code and many others) use external tools. This server exposes your Twake Project to the assistant as **40 tools**: projects, boards, sections and tasks (keys, due dates, deadlines, priorities, assignees, labels, descriptions, comments, history, reminders), saved filters, the agenda and notifications, and actions as you: create a board or a task, plan it, move it, assign it, comment it, complete it, archive it.
+`mcp-twake-project` is a [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server. MCP is the open standard that lets AI assistants (Claude Desktop, Claude Code, Hermes Agent, Cursor, VS Code and many others) use external tools. This server exposes your Twake Project to the assistant as **47 tools**: projects, boards, sections and tasks (keys, due dates, deadlines, priorities, assignees, labels, descriptions, comments, history, reminders), saved filters, the agenda and notifications, and actions as you: create a board or a task, plan it, move it, transfer it to another board, assign it, comment it, complete it, archive it, share a board.
 
 Twake Project organises the work of a team into projects and boards, each task carrying a readable key (for example `ATLAS-12`). The server talks to the Twake Project backend API, as **you**, with an OIDC access token from your identity provider.
 
@@ -39,21 +39,22 @@ Open source MCP servers connect AI assistants to the whole workplace:
 
 ## Features
 
-### 40 MCP tools
+### 47 MCP tools
 
-19 read-only, 21 that write and ask for your approval first (⚠️).
+21 read-only, 26 that write and ask for your approval first (⚠️).
 
 | Category | Tools |
 |---|---|
 | Account | `whoami` |
-| Projects and boards | `list_projects`, `list_boards`, `get_board`, `get_board_sharing`, `check_key_prefix`, `list_hidden_tasks` (archived, trash) |
-| Tasks, read | `get_task` (by id or key), `search_tasks`, `my_tasks`, `get_agenda`, `get_task_description`, `get_task_comments`, `get_task_history` |
+| Projects and boards | `list_projects`, `list_boards`, `get_board`, `get_board_sharing`, `find_people_to_invite`, `check_key_prefix`, `list_hidden_tasks` (archived, trash) |
+| Tasks, read | `get_task` (by id or key), `search_tasks`, `my_tasks`, `get_agenda`, `get_task_description`, `get_task_comments`, `get_task_history`, `preview_task_transfer` |
 | Views | `list_labels`, `list_filters`, `get_filter_tasks`, `list_notifications`, `list_people` |
 | Boards, write ⚠️ | `create_board`, `update_board` (name, layout), `move_board` |
 | Sections ⚠️ | `create_section`, `update_section`, `delete_section` ⚠️ |
-| Tasks, write ⚠️ | `create_task`, `update_task`, `move_task`, `complete_task`, `assign_task`, `set_task_description`, `add_comment` |
+| Tasks, write ⚠️ | `create_task`, `update_task`, `move_task`, `complete_task`, `assign_task`, `set_task_description`, `transfer_task`, `add_comment` |
 | Organisation ⚠️ | `create_label`, `set_task_labels`, `archive_task` ⚠️, `restore_task`, `trash_task` ⚠️ |
 | Reminders ⚠️ | `add_reminder`, `remove_reminder` ⚠️ |
+| Sharing ⚠️ | `invite_to_board`, `cancel_board_invite` ⚠️, `set_board_member_role`, `remove_board_member` ⚠️ |
 | Notifications ⚠️ | `mark_notifications_read` |
 
 ⚠️ = asks for your approval first (and for the deletions, `destructiveHint`). Read tools carry `readOnlyHint`. The server never deletes a board, and `trash_task` is recoverable with `restore_task`.
@@ -65,6 +66,13 @@ Open source MCP servers connect AI assistants to the whole workplace:
 - **Descriptions that do not collide**: writing a description takes its version, so a change made meanwhile is not overwritten silently (HTTP 409, read again).
 - **Clear errors**: a role that does not allow the action, a board or task that does not exist (with the close names), an expired token, a version conflict: each says what to do.
 - **Sovereignty**: the server runs next to your assistant and talks directly to your Twake Project.
+
+## Limits
+
+- **Sharing**: Twake Project shares a board through its project. A personal project, or a project managed by a Twake Space, stays private: `get_board_sharing`, `find_people_to_invite` and the sharing writes answer HTTP 403 on such a board, and the error says so. Create a project in Twake Project itself to invite people.
+- **Sections**: every section carries a category (`backlog`, `unstarted`, `started`, `completed`, `canceled`), which tells the board what it means.
+- **Transfer**: moving a task to another board gives it a new number there; its previous key is kept. Assignees who are not members of the target board are dropped, and labels follow by name. `preview_task_transfer` says what would be dropped or created before anything moves.
+- **No deletion of a board**: the API has no route for it; a task in the trash can be restored with `restore_task` but not destroyed for good from the server.
 
 ## Requirements
 
@@ -243,7 +251,7 @@ mcp_servers:
 npm ci
 npm run typecheck        # sources and tests
 npm run build
-npm test                 # Vitest: units, the 40 tools against a recording fake API,
+npm test                 # Vitest: units, the 47 tools against a recording fake API,
                          # and the built server over stdio against a fake API and identity provider
 ```
 
