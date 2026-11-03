@@ -31,6 +31,24 @@ export class ProjectError extends Error {
   }
 }
 
+/** Refusals of twake-tasks (apps/backend/src/refusalStatus.ts) that call for something other than a retry. */
+const CODE_HINTS: Record<string, string> = {
+  stale_version: 'The item changed since it was read (version conflict): read it again and retry.',
+  stale_neighbours: 'The tasks around it moved since the board was read: read it again and retry.',
+  archived: 'The board, the task or its parent is archived or in the trash: restore it first.',
+  last_admin: 'The project needs at least one admin: make someone else admin first.',
+  label_taken: 'A label with this name already exists on the board.',
+  section_name_taken: 'A section with this name already exists on the board.',
+  key_prefix_taken: 'This key prefix is taken: call check_key_prefix for a free one.',
+  section_not_empty: 'The section still holds tasks: move them to another section.',
+  too_many_invites: 'Too many pending invitations on this project: cancel some first.',
+  too_many_reminders: 'The task has as many reminders as allowed: remove one first.',
+  invalid_assignee: 'Only members of the board can be assigned; an invited person becomes a member at their next sign-in.',
+  invalid_section: 'No such section on this board: call get_board to see its sections.',
+  invalid_parent: 'The parent task is not usable here: a subtask moves with its parent, and is restored after it.',
+  same_board: 'The task is already on that board.',
+};
+
 function hintFor(status: number, code: string, path: string): string | undefined {
   if (status === 401) return 'The access token is invalid or expired, or the SSO does not accept the audience "twake-projects" for this client.';
   if (status === 403) {
@@ -41,11 +59,8 @@ function hintFor(status: number, code: string, path: string): string | undefined
     return 'Twake Project refused this action for your account.';
   }
   if (status === 404) return 'Not found, or not visible with this token: check the board id and the task id.';
-  if (status === 409) return 'The item changed since it was read (version conflict): read it again and retry.';
   if (status === 429) return 'Rate limited by Twake Project: retry in a moment.';
-  if (code === 'invalid_request') return 'The server refused the parameters (see the message).';
-  if (/^\/boards\/[^/]+\/tasks/.test(path)) return 'Check the board id: a task is only addressed through its board.';
-  return undefined;
+  return CODE_HINTS[code];
 }
 
 export class ProjectClient {
@@ -135,6 +150,12 @@ export interface Task {
   assignees?: Person[];
   labels?: Label[];
   commentCount?: number;
+}
+
+/** A task in a list that spans boards: my tasks, a saved filter, the search. */
+export interface ListedTask extends Task {
+  boardId: string;
+  boardName: string;
 }
 
 export interface BoardSummary {

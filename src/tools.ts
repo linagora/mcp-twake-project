@@ -2,7 +2,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { Approver, ApprovalUnavailable, NotApproved, type ApprovalMode, type Language } from './approval.js';
-import type { Board, BoardSummary, Project, ProjectClient, Section, Task } from './project.js';
+import type { Board, BoardSummary, ListedTask, Project, ProjectClient, Section, Task } from './project.js';
 import { boardDocument, boardLine, projectLine, sectionLine, taskLine, when } from './format.js';
 import type { Identity } from './identity.js';
 
@@ -80,6 +80,45 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
   };
 
   const detail = (b: BoardSummary): Promise<Board> => api.request<Board>('GET', `/boards/${b.id}`);
+
+  /** An archived or trashed task: GET /boards/:id lists only the visible ones. */
+  const hiddenTask = async (b: BoardSummary, ref: string): Promise<Task> => {
+    const lists = await Promise.all(['archived', 'trash'].map((kind) => api.request<{ tasks: Task[] }>('GET', `/boards/${b.id}/${kind}`)));
+    const all = lists.flatMap((l) => l.tasks ?? []);
+    const t = all.find((x) => x.id === ref) ?? all.find((x) => x.key.toLowerCase() === ref.toLowerCase());
+    if (!t) throw new Error(`No archived or trashed task "${ref}" in ${b.name}. Call list_hidden_tasks to see them.`);
+    return t;
+  };
+
+  /** The target of a transfer and what the backend would drop or create, from its preview. */
+  const transferPlan = async (a: { board: string; task: string; target_board: string; target_section?: string }) => {
+    const [from, to] = await Promise.all([board(a.board), board(a.target_board)]);
+    if (to.id === from.id) throw new Error('The task is already on that board.');
+    const [{ task: t }, toDetail] = await Promise.all([task(from, a.task), detail(to)]);
+    let section: Section | undefined;
+    if (a.target_section) {
+      section = toDetail.sections.find((x) => x.id === a.target_section || x.name.toLowerCase() === a.target_section!.toLowerCase());
+      if (!section) throw new Error(`No section "${a.target_section}" on ${boardLabel(to)}: ${toDetail.sections.map((x) => x.name).join(', ') || 'it has none'}.`);
+    }
+    const body = { boardId: to.id, sectionId: section?.id ?? null };
+    const preview = await api.request<{ droppedAssignees: { name: string | null; email: string | null }[]; createdLabels: string[] }>(
+      'POST',
+      `/boards/${from.id}/tasks/${t.id}/transfer/preview`,
+      { body },
+    );
+    const dropped = preview.droppedAssignees.map((p) => (p.name && p.email ? `${p.name} <${p.email}>` : p.name || p.email || '?'));
+    const created = preview.createdLabels;
+    const effects = [
+      dropped.length ? `assignees dropped: ${dropped.join(', ')}` : 'no assignee dropped',
+      created.length ? `labels created there: ${created.join(', ')}` : 'no label created',
+    ];
+    if (from.project.id !== to.project.id) {
+      effects.push(`other project (${to.project.name}): people outside it lose their assignments, follows and reminders on the task`);
+    }
+    return { from, to, task: t, body, effects, target: `${boardLabel(to)}${section ? ` · section ${section.name}` : ''}` };
+  };
+
+  const listedTask = (r: ListedTask) => `${taskLine(r)}\n  board ${r.boardName} [${r.boardId}]`;
 
   const task = async (b: BoardSummary, ref: string): Promise<{ board: Board; task: Task }> => {
     const boardDetail = await detail(b);
@@ -220,17 +259,13 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
     },
     async (a: { query: string }) => {
       try {
-        const out = await api.request<{ tasks: { task: Task; boardId: string; boardName: string; match?: { field: string; text: string } }[] }>(
-          'GET',
-          '/search',
-          { query: { q: a.query } },
-        );
+        const out = await api.request<{ tasks: (ListedTask & { match: { field: string; text: string } | null })[] }>('GET', '/search', { query: { q: a.query } });
         const list = out.tasks ?? [];
         if (!list.length) return ok(`No task matches "${a.query}".`);
         return ok(
           `${list.length} task(s) matching "${a.query}":\n${list
             .slice(0, 50)
-            .map((r) => `${taskLine(r.task)}\n  board ${r.boardName} [${r.boardId}]${r.match ? ` · match ${r.match.field}: ${r.match.text.replace(/\s+/g, ' ').trim()}` : ''}`)
+            .map((r) => `${listedTask(r)}${r.match ? ` · match ${r.match.field}: ${r.match.text.replace(/\s+/g, ' ').trim()}` : ''}`)
             .join('\n')}${list.length > 50 ? `\n\n${list.length} total, the first 50 shown.` : ''}`,
         );
       } catch (e) {
@@ -249,10 +284,10 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
     },
     async () => {
       try {
-        const out = await api.request<{ tasks: { task: Task; boardId: string; boardName: string }[] }>('GET', '/my-tasks');
+        const out = await api.request<{ tasks: ListedTask[] }>('GET', '/my-tasks');
         const list = out.tasks ?? [];
         if (!list.length) return ok('No task is assigned to you.');
-        return ok(`${list.length} task(s) assigned to you:\n${list.map((r) => `${taskLine(r.task)}\n  board ${r.boardName} [${r.boardId}]`).join('\n')}`);
+        return ok(`${list.length} task(s) assigned to you:\n${list.map(listedTask).join('\n')}`);
       } catch (e) {
         return refusal(e, 'my_tasks');
       }
@@ -335,15 +370,16 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
       try {
         const b = await board(a.board);
         const { task: t } = await task(b, a.task);
-        const out = await api.request<{ history: { id: string; at?: string; createdAt?: string; actor?: { name: string | null; email: string }; kind?: string; field?: string }[] }>(
+        const out = await api.request<{ entries: { at: string; actor: { name: string | null; email: string | null }; field: string; from: unknown; to: unknown; name: string | null }[] }>(
           'GET',
           `/boards/${b.id}/tasks/${t.id}/history`,
         );
-        const list = out.history ?? [];
+        const list = out.entries ?? [];
         if (!list.length) return ok(`No change recorded on ${t.key}.`);
+        const value = (v: unknown) => (v === null || v === undefined || v === '' ? 'none' : typeof v === 'string' ? v : JSON.stringify(v));
         return ok(
           `${list.length} change(s) on ${t.key}:\n${list
-            .map((h) => `- ${h.at ?? h.createdAt ?? '?'} ${h.actor ? h.actor.name || h.actor.email : '?'}: ${h.kind ?? h.field ?? ''}`)
+            .map((h) => `- ${h.at} ${h.actor.name || h.actor.email || '?'}: ${h.field}${h.name ? ` ${h.name}` : ''} ${value(h.from)} → ${value(h.to)}`)
             .join('\n')}`,
         );
       } catch (e) {
@@ -373,8 +409,8 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
     async (a: { unread_only?: boolean }) => {
       try {
         if (a.unread_only) {
-          const out = await api.request<{ projects: { notifications?: unknown[] }[] }>('GET', '/notifications/unread');
-          const n = (out.projects ?? []).reduce((s, p) => s + (p.notifications?.length ?? 0), 0);
+          const out = await api.request<{ projects: { projectId: string; count: number }[] }>('GET', '/notifications/unread');
+          const n = (out.projects ?? []).reduce((s, p) => s + p.count, 0);
           return ok(n ? `${n} unread notification(s).` : 'No unread notification.');
         }
         const out = await api.request<{ notifications: { id: string; reason: string; boardName: string; key: string; title: string; createdAt: string; readAt: string | null }[] }>(
@@ -429,9 +465,9 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
         const { filters } = await api.request<{ filters: { id: string; name: string }[] }>('GET', '/filters');
         const f = filters.find((x) => x.id === a.filter) ?? filters.find((x) => x.name.toLowerCase() === a.filter.toLowerCase());
         if (!f) throw new Error(`No filter matches "${a.filter}".`);
-        const out = await api.request<{ tasks: { task: Task; boardId: string; boardName: string }[] }>('GET', `/filters/${f.id}/tasks`, { query: { zone: ctx.timeZone } });
+        const out = await api.request<{ tasks: ListedTask[] }>('GET', `/filters/${f.id}/tasks`, { query: { zone: ctx.timeZone } });
         const list = out.tasks ?? [];
-        return ok(list.length ? `${f.name}: ${list.length} task(s)\n${list.map((r) => `${taskLine(r.task)}\n  board ${r.boardName} [${r.boardId}]`).join('\n')}` : `${f.name}: no task.`);
+        return ok(list.length ? `${f.name}: ${list.length} task(s)\n${list.map(listedTask).join('\n')}` : `${f.name}: no task.`);
       } catch (e) {
         return refusal(e, 'get_filter_tasks');
       }
@@ -527,7 +563,7 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
       description: 'Create a board in a project (the personal Inbox when no project is given).',
       inputSchema: {
         name: z.string().min(1).max(100),
-        key_prefix: z.string().regex(/^[A-Z][A-Z0-9]{0,9}$/).optional().describe('Key prefix (2 to 10 characters A-Z 0-9); Twake Project picks one when omitted.'),
+        key_prefix: z.string().regex(/^[A-Z][A-Z0-9]{0,9}$/).optional().describe('Key prefix (1 to 10 characters A-Z 0-9); derived from the name when omitted.'),
         project: z.string().optional().describe('Project id or exact name (default: your personal project).'),
       },
       annotations: WRITE,
@@ -540,16 +576,22 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
           projectId = (projects.find((p) => p.id === a.project) ?? projects.find((p) => p.name.toLowerCase() === a.project!.toLowerCase()))?.id;
           if (!projectId) throw new Error(`No project matches "${a.project}".`);
         }
+        let keyPrefix = a.key_prefix;
+        if (!keyPrefix) {
+          const candidate = a.name.normalize('NFD').toUpperCase().replace(/[^A-Z0-9]/g, '').replace(/^[0-9]+/, '').slice(0, 3) || 'B';
+          const check = await api.request<{ available: boolean; suggestion: string }>('GET', `/key-prefixes/${candidate}`);
+          keyPrefix = check.available ? candidate : check.suggestion;
+        }
         await approver.confirm({
           action: 'Create a board',
           as: await as(),
           details: [
             ['Name', a.name],
-            ['Key prefix', a.key_prefix],
+            ['Key prefix', keyPrefix],
             ['Project', a.project ?? 'your personal project'],
           ],
         });
-        const b = await api.request<BoardSummary>('POST', '/boards', { body: { name: a.name, keyPrefix: a.key_prefix, projectId } });
+        const b = await api.request<BoardSummary>('POST', '/boards', { body: { name: a.name, keyPrefix, projectId } });
         return ok(`Board created: ${b.name} (${b.keyPrefix}) [id ${b.id}]`);
       } catch (e) {
         return refusal(e, 'create_board');
@@ -561,7 +603,7 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
     'update_board',
     {
       title: 'Rename a board or change its layout',
-      description: 'Rename a board, or set how it opens (board, list or calendar).',
+      description: 'Rename a board, or set how it opens for you (board, list or calendar).',
       inputSchema: {
         board: boardArg,
         name: z.string().min(1).max(100).optional(),
@@ -583,7 +625,7 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
           ],
         });
         if (a.name) await api.request('PATCH', `/boards/${b.id}`, { body: { name: a.name } });
-        if (a.layout) await api.request('PATCH', `/boards/${b.id}`, { body: { layout: a.layout } });
+        if (a.layout) await api.request('PUT', `/boards/${b.id}/layout`, { body: { layout: a.layout } });
         return ok(`${boardLabel({ ...b, name: a.name ?? b.name })} updated.`);
       } catch (e) {
         return refusal(e, 'update_board');
@@ -1067,7 +1109,7 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
       async (a: { board: string; task: string }) => {
         try {
           const b = await board(a.board);
-          const { task: t } = await task(b, a.task);
+          const t = name === 'restore_task' ? await hiddenTask(b, a.task) : (await task(b, a.task)).task;
           await approver.confirm({ action, as: await as(), board: boardLabel(b), details: [['Task', `${t.key}: ${t.title}`]] });
           const url = `/boards/${b.id}/tasks/${t.id}${path ? `/${path}` : ''}`;
           await api.request(path ? 'POST' : 'DELETE', url);
@@ -1174,25 +1216,8 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
     },
     async (a: { board: string; task: string; target_board: string; target_section?: string }) => {
       try {
-        const from = await board(a.board);
-        const to = await board(a.target_board);
-        if (to.id === from.id) throw new Error('The task is already on that board.');
-        const { task: t } = await task(from, a.task);
-        const toDetail = await detail(to);
-        const sectionId = a.target_section
-          ? (toDetail.sections.find((x) => x.id === a.target_section || x.name.toLowerCase() === a.target_section!.toLowerCase())?.id ?? null)
-          : null;
-        const preview = await api.request<{ droppedAssignees: string[]; createdLabels: string[] }>('POST', `/boards/${from.id}/tasks/${t.id}/transfer/preview`, {
-          body: { boardId: to.id, sectionId },
-        });
-        const dropped = preview.droppedAssignees ?? [];
-        const created = preview.createdLabels ?? [];
-        return ok(
-          [`${t.key} → ${boardLabel(to)}${sectionId ? ` · section ${toDetail.sections.find((x) => x.id === sectionId)?.name}` : ''}`,
-            dropped.length ? `assignees dropped: ${dropped.join(', ')}` : 'no assignee dropped',
-            created.length ? `labels created there: ${created.join(', ')}` : 'no label created',
-          ].join('\n'),
-        );
+        const p = await transferPlan(a);
+        return ok([`${p.task.key} → ${p.target}`, ...p.effects].join('\n'));
       } catch (e) {
         return refusal(e, 'preview_task_transfer');
       }
@@ -1205,29 +1230,23 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
       title: 'Move a task to another board',
       description: 'Move a task and its subtasks to another board (they take new numbers there and keep their old keys). Use preview_task_transfer first.',
       inputSchema: { board: boardArg, task: taskArg, target_board: z.string().min(1), target_section: z.string().optional() },
-      annotations: WRITE,
+      annotations: DESTRUCTIVE,
     },
     async (a: { board: string; task: string; target_board: string; target_section?: string }) => {
       try {
-        const from = await board(a.board);
-        const to = await board(a.target_board);
-        if (to.id === from.id) throw new Error('The task is already on that board.');
-        const { task: t } = await task(from, a.task);
-        const toDetail = await detail(to);
-        const sectionId = a.target_section
-          ? (toDetail.sections.find((x) => x.id === a.target_section || x.name.toLowerCase() === a.target_section!.toLowerCase())?.id ?? null)
-          : null;
+        const p = await transferPlan(a);
         await approver.confirm({
           action: 'Move a task to another board',
           as: await as(),
-          board: boardLabel(from),
+          board: boardLabel(p.from),
           details: [
-            ['Task', `${t.key}: ${t.title}`],
-            ['To', `${boardLabel(to)}${sectionId ? ` · section ${toDetail.sections.find((x) => x.id === sectionId)?.name}` : ''}`],
+            ['Task', `${p.task.key}: ${p.task.title}`],
+            ['To', p.target],
+            ['Effects', p.effects.join('\n')],
           ],
         });
-        await api.request('POST', `/boards/${from.id}/tasks/${t.id}/transfer`, { body: { boardId: to.id, sectionId } });
-        return ok(`${t.key} moved to ${boardLabel(to)} (it has a new key there).`);
+        const out = await api.request<{ key: string }>('POST', `/boards/${p.from.id}/tasks/${p.task.id}/transfer`, { body: p.body });
+        return ok(`${p.task.key} moved to ${boardLabel(p.to)}, its key there is ${out.key}.`);
       } catch (e) {
         return refusal(e, 'transfer_task');
       }

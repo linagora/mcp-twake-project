@@ -28,6 +28,7 @@ const TASK = {
   labels: [],
   commentCount: 0,
 };
+const LISTED = { ...TASK, category: null, parentTitle: null, boardId: 'b1', boardName: 'Projet', projectId: 'p1' };
 const BOARD = {
   ...BOARDS[0],
   version: 3,
@@ -50,23 +51,24 @@ class FakeApi {
       invites: [{ id: 'i1', email: 'chloe.petit@example.com', role: 'viewer' }],
     };
     if (path === '/boards/b1/sharing/people') return { people: [{ userId: 'u3', email: 'chloe.petit@example.com', name: 'Chloé PETIT', role: 'viewer' }] };
-    if (path === '/boards/b1/tasks/t1/transfer/preview') return { droppedAssignees: ['bob.durand@example.com'], createdLabels: ['urgent'] };
-    if (path === '/boards/b1/tasks/t1/transfer') return { ok: true };
+    if (path === '/boards/b1/tasks/t1/transfer/preview') return { droppedAssignees: [{ userId: 'u2', name: 'Bob DURAND', email: 'bob.durand@example.com' }], createdLabels: ['urgent'] };
+    if (path === '/boards/b1/tasks/t1/transfer') return { droppedAssignees: [], createdLabels: ['urgent'], key: 'INBOX-7' };
     if (path === '/projects') return { projects: [{ id: 'p1', name: 'Projet', personal: false, managed: false, role: 'admin' }] };
-    if (path === '/my-tasks') return { tasks: [{ task: TASK, boardId: 'b1', boardName: 'Projet' }] };
-    if (path.startsWith('/search')) return { tasks: [{ task: TASK, boardId: 'b1', boardName: 'Projet', match: { field: 'title', text: 'Écrire la note' } }] };
+    if (path === '/my-tasks') return { tasks: [LISTED] };
+    if (path.startsWith('/search')) return { tasks: [{ ...LISTED, excerpt: null, match: { field: 'title', text: 'Écrire la note' } }] };
     if (path === '/people') return { people: [{ userId: 'u1', email: 'alice.martin@example.com', name: 'Alice MARTIN' }] };
     if (path === '/labels') return { labels: ['urgent'] };
     if (path === '/filters') return { filters: [{ id: 'f1', name: 'Mes urgences' }] };
-    if (path === '/filters/f1/tasks') return { tasks: [{ task: TASK, boardId: 'b1', boardName: 'Projet' }] };
+    if (path === '/filters/f1/tasks') return { tasks: [LISTED] };
     if (path === '/notifications') return { notifications: [{ id: 'n1', reason: 'assigned', boardName: 'Projet', key: 'PROJ-1', title: 'Écrire la note', createdAt: '2026-11-02T08:00:00Z', readAt: null }] };
-    if (path === '/notifications/unread') return { projects: [{ notifications: [{}] }] };
+    if (path === '/notifications/unread') return { projects: [{ projectId: 'p1', count: 2 }, { projectId: 'p0', count: 1 }] };
     if (path === '/settings') return { language: null };
     if (path === '/boards/b1/archived' || path === '/boards/b1/trash') return { tasks: [{ ...TASK, at: '2026-11-01T08:00:00Z' }] };
     if (path === '/key-prefixes/PRO') return { available: false, suggestion: 'PRO2' };
+    if (path === '/key-prefixes/NOU') return { available: false, suggestion: 'NOU2' };
     if (path === '/boards/b1/sharing') return { people: [{ email: 'alice.martin@example.com' }] };
     if (path.startsWith('/boards/b1/tasks/t1/comments')) return { comments: [{ id: 'c1', body: 'Bonjour', author: { name: 'Bob DURAND', email: 'bob.durand@example.com' }, createdAt: '2026-11-02T08:00:00Z' }] };
-    if (path.startsWith('/boards/b1/tasks/t1/history')) return { history: [{ id: 'h1', createdAt: '2026-11-02T08:00:00Z', actor: { name: 'Bob DURAND', email: 'bob.durand@example.com' }, kind: 'created' }] };
+    if (path.startsWith('/boards/b1/tasks/t1/history')) return { entries: [{ actor: { userId: 'u2', name: 'Bob DURAND', email: 'bob.durand@example.com', avatar: null }, field: 'title', from: 'Note', to: 'Écrire la note', name: null, at: '2026-11-02T08:00:00Z' }] };
     if (path.endsWith('/description') && method === 'GET') return { markdown: '# Note', version: 4 };
     if (method === 'POST' && path === '/boards/b1/tasks') return { id: 't9', key: 'PROJ-9', title: (opts.body as { title: string }).title };
     if (method === 'POST' && path === '/boards/b1/labels') return { id: 'l9', name: (opts.body as { name: string }).name };
@@ -144,12 +146,16 @@ describe('reads', () => {
 
   it('searches tasks with their board', async () => {
     const r = await call('search_tasks', { query: 'note' });
-    expect(r.text).toContain('board Projet [b1]');
+    expect(r.text).toContain('PROJ-1: Écrire la note');
+    expect(r.text).toContain('board Projet [b1] · match title: Écrire la note');
     expect(api.calls.at(-1)?.query).toEqual({ q: 'note' });
   });
 
   it('lists my tasks, the agenda, people, labels, filters and their tasks', async () => {
-    expect((await call('my_tasks')).text).toContain('assigned to you');
+    const mine = await call('my_tasks');
+    expect(mine.text).toContain('1 task(s) assigned to you');
+    expect(mine.text).toContain('PROJ-1: Écrire la note');
+    expect(mine.text).toContain('board Projet [b1]');
     const people = await call('list_people');
     expect(people.text).toContain('Alice MARTIN <alice.martin@example.com>');
     expect(people.text).toContain('[userId u1]');
@@ -162,8 +168,12 @@ describe('reads', () => {
 
   it('reads the comments, the history and the description', async () => {
     expect((await call('get_task_comments', { board: 'PROJ', task: 'PROJ-1' })).text).toContain('Bonjour');
-    expect((await call('get_task_history', { board: 'PROJ', task: 'PROJ-1' })).text).toContain('created');
+    expect((await call('get_task_history', { board: 'PROJ', task: 'PROJ-1' })).text).toContain('Bob DURAND: title Note → Écrire la note');
     expect((await call('get_task_description', { board: 'PROJ', task: 'PROJ-1' })).text).toContain('version 4');
+  });
+
+  it('counts the unread notifications of every project', async () => {
+    expect((await call('list_notifications', { unread_only: true })).text).toBe('3 unread notification(s).');
   });
 
   it('sends the agenda with the configured zone and the asked days', async () => {
@@ -270,6 +280,27 @@ describe('writes are approved first', () => {
     expect(writes()[0].body).toEqual({ name: 'Nouveau', keyPrefix: 'NEW', projectId: 'p1' });
   });
 
+  it('derives a free key prefix from the name when none is given', async () => {
+    await connect('accept');
+    await call('create_board', { name: 'Nouveau' });
+    expect(prompts[0]).toContain('Key prefix : NOU2');
+    expect(writes()[0].body).toEqual({ name: 'Nouveau', keyPrefix: 'NOU2', projectId: undefined });
+  });
+
+  it('sets your own layout of a board', async () => {
+    await connect('accept');
+    await call('update_board', { board: 'PROJ', layout: 'list' });
+    expect(writes()).toEqual([{ method: 'PUT', path: '/boards/b1/layout', body: { layout: 'list' }, query: undefined }]);
+  });
+
+  it('restores a task found among the archived and trashed ones', async () => {
+    await connect('accept');
+    const r = await call('restore_task', { board: 'PROJ', task: 'PROJ-1' });
+    expect(r.text).toBe('PROJ-1 restored.');
+    expect(api.calls.map((c) => c.path)).toEqual(expect.arrayContaining(['/boards/b1/archived', '/boards/b1/trash']));
+    expect(writes()).toEqual([{ method: 'POST', path: '/boards/b1/tasks/t1/restore', body: undefined, query: undefined }]);
+  });
+
   it('renders the sharing of a board with roles and invitations', async () => {
     await connect('accept');
     const r = await call('get_board_sharing', { board: 'PROJ' });
@@ -289,7 +320,8 @@ describe('writes are approved first', () => {
   it('previews a transfer without moving anything', async () => {
     await connect('accept');
     const r = await call('preview_task_transfer', { board: 'PROJ', task: 'PROJ-1', target_board: 'INBOX' });
-    expect(r.text).toContain('assignees dropped: bob.durand@example.com');
+    expect(r.text).toContain('assignees dropped: Bob DURAND <bob.durand@example.com>');
+    expect(r.text).toContain('other project (Personal)');
     expect(r.text).toContain('labels created there: urgent');
     expect(writes()).toEqual([{ method: 'POST', path: '/boards/b1/tasks/t1/transfer/preview', body: { boardId: 'b2', sectionId: null }, query: undefined }]);
     expect(prompts).toHaveLength(0);
@@ -298,10 +330,20 @@ describe('writes are approved first', () => {
   it('transfers a task once approved', async () => {
     await connect('accept');
     const r = await call('transfer_task', { board: 'PROJ', task: 'PROJ-1', target_board: 'INBOX' });
-    expect(r.text).toContain('moved to Inbox (INBOX)');
+    expect(r.text).toContain('moved to Inbox (INBOX), its key there is INBOX-7');
     expect(prompts[0]).toContain('Move a task to another board');
     expect(prompts[0]).toContain('To : Inbox (INBOX)');
+    expect(prompts[0]).toContain('assignees dropped: Bob DURAND <bob.durand@example.com>');
+    expect(prompts[0]).toContain('people outside it lose their assignments, follows and reminders');
     expect(writes().at(-1)).toMatchObject({ method: 'POST', path: '/boards/b1/tasks/t1/transfer', body: { boardId: 'b2', sectionId: null } });
+  });
+
+  it('refuses a transfer to a section the target board does not have', async () => {
+    await connect('accept');
+    const r = await call('transfer_task', { board: 'PROJ', task: 'PROJ-1', target_board: 'INBOX', target_section: 'Nope' });
+    expect(r.isError).toBe(true);
+    expect(r.text).toContain('No section "Nope" on Inbox (INBOX): it has none');
+    expect(writes()).toEqual([]);
   });
 
   it('refuses to move a task to its own board', async () => {
@@ -342,6 +384,7 @@ describe('writes are approved first', () => {
     const tools = (await client.listTools()).tools;
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     expect(byName.trash_task.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(byName.transfer_task.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     expect(byName.get_board.annotations).toMatchObject({ readOnlyHint: true });
     expect(tools.length).toBe(47);
   });
