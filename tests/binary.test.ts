@@ -128,7 +128,7 @@ describe('the built server over stdio', () => {
   });
 
   it('reports an API error with its hint', async () => {
-    const r = await client.callTool({ name: 'create_board', arguments: { name: 'Nouveau' } });
+    const r = await client.callTool({ name: 'create_board', arguments: { name: 'Nouveau', key_prefix: 'NEW' } });
     const text = (r.content as { text: string }[])[0].text;
     expect(r.isError).toBe(true);
     expect(text).toContain('HTTP 500');

@@ -2,7 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { loadConfig } from '../src/config.js';
 import { approvalMessage } from '../src/approval.js';
 import { boardDocument, taskLine } from '../src/format.js';
-import type { Board } from '../src/project.js';
+import { ProjectClient, type Board } from '../src/project.js';
+import { CommandTokenProvider } from '../src/token-command.js';
 
 const base = {
   TWAKE_PROJECT_URL: 'https://projects.example.com',
@@ -45,6 +46,41 @@ describe('config', () => {
   it('refuses an unknown approval mode and language', () => {
     expect(() => loadConfig({ ...base, TWAKE_PROJECT_APPROVAL: 'always' })).toThrow(/elicit or client/);
     expect(() => loadConfig({ ...base, USER_LANGUAGE: 'de' })).toThrow(/en or fr/);
+  });
+});
+
+describe('CommandTokenProvider', () => {
+  it('reuses a raw token instead of running the command for every request', async () => {
+    const p = new CommandTokenProvider('date +%s%N');
+    const a = await p.getToken();
+    expect(await p.getToken()).toBe(a);
+  });
+
+  it('keeps a short-lived token for half its lifetime, whatever the margin', async () => {
+    const soon = Math.floor(Date.now() / 1000) + 30;
+    const p = new CommandTokenProvider(`printf '{"access_token":"%s","expires_at":${soon}}' $(date +%s%N)`, { marginSeconds: 3600 });
+    const a = await p.getToken();
+    expect(await p.getToken()).toBe(a);
+  });
+
+  it('runs the command again for a token about to expire', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const p = new CommandTokenProvider(`printf '{"access_token":"%s","expires_at":${now}}' $(date +%s%N)`);
+    const a = await p.getToken();
+    expect(await p.getToken()).not.toBe(a);
+  });
+});
+
+describe('API errors', () => {
+  const failing = (status: number, error: string) =>
+    new ProjectClient({ apiUrl: 'https://p.example.com/api', timeoutMs: 1000 }, { getToken: async () => 't', invalidate() {} }, (async () =>
+      new Response(JSON.stringify({ error }), { status })) as typeof fetch);
+
+  it('hints from the error code, not the status', async () => {
+    await expect(failing(409, 'label_taken').request('POST', '/boards/b1/labels')).rejects.toMatchObject({ hint: expect.stringContaining('already exists') });
+    await expect(failing(409, 'stale_version').request('PUT', '/boards/b1/tasks/t1/description')).rejects.toMatchObject({ hint: expect.stringContaining('read it again') });
+    await expect(failing(400, 'invalid_assignee').request('PUT', '/boards/b1/tasks/t1/assignees')).rejects.toMatchObject({ hint: expect.stringContaining('members of the board') });
+    await expect(failing(400, 'invalid_request').request('POST', '/boards/b1/tasks')).rejects.toMatchObject({ hint: undefined });
   });
 });
 
