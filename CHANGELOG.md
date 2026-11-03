@@ -4,6 +4,18 @@ All notable changes to mcp-twake-project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-03
+
+### Fixed
+
+- The read tools follow the `twake-tasks` API contract: `search_tasks`, `my_tasks`, saved filters, task history, the unread count, the board layout and `restore_task` no longer fail or print wrong values. A refusal gets the hint of its error code, and the command token's result is reused for at least half its lifetime.
+- `create_board` derives a free key prefix when none is given, instead of failing on a taken one.
+- `transfer_task` is marked destructive, and its approval lists the assignees it drops and the labels it creates.
+
+### Changed
+
+- Sharing writes name the project they act on: invites and roles are stored per project, so the approval says how many boards it holds and what the person gains or loses. `invite_to_board` and `set_board_member_role` carry `destructiveHint`, so a client that only confirms destructive tools asks first. Removing yourself warns that you lose your assignments, follows and reminders.
+
 ## [0.2.0] - 2026-11-02
 
 ### Added
