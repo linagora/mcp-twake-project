@@ -57,12 +57,12 @@ Open source MCP servers connect AI assistants to the whole workplace:
 | Sharing ⚠️ | `invite_to_board`, `cancel_board_invite` ⚠️, `set_board_member_role`, `remove_board_member` ⚠️ |
 | Notifications ⚠️ | `mark_notifications_read` |
 
-⚠️ = asks for your approval first (and for the deletions, `destructiveHint`). Read tools carry `readOnlyHint`. The server never deletes a board, and `trash_task` is recoverable with `restore_task`.
+⚠️ = asks for your approval first (and for the deletions and the sharing writes, `destructiveHint`). Read tools carry `readOnlyHint`. The server never deletes a board, and `trash_task` is recoverable with `restore_task`.
 
 ### Highlights
 
 - **Keys, not only ids**: a task is addressed by its key (`ATLAS-12`) or its id; a board by its id, its key prefix or its name.
-- **Informed approval**: the prompt names the board, the task, the exact text and dates, who acts, and carries a unique reference.
+- **Informed approval**: the prompt names the board, the task, the exact text and dates, who acts, and carries a unique reference. Sharing is approved as what it is: the project and how many boards it holds.
 - **Descriptions that do not collide**: writing a description takes its version, so a change made meanwhile is not overwritten silently (HTTP 409, read again).
 - **Clear errors**: a role that does not allow the action, a board or task that does not exist (with the close names), an expired token, a version conflict: each says what to do.
 - **Sovereignty**: the server runs next to your assistant and talks directly to your Twake Project.

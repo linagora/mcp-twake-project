@@ -81,6 +81,16 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
 
   const detail = (b: BoardSummary): Promise<Board> => api.request<Board>('GET', `/boards/${b.id}`);
 
+  /**
+   * The project behind a board and how many boards it holds. Sharing a board
+   * shares the whole project (invites and roles are stored per project), so the
+   * approval has to say so instead of naming only the board.
+   */
+  const projectOf = async (b: BoardSummary): Promise<{ name: string; boards: number }> => {
+    const all = await boards(true);
+    return { name: b.project.name, boards: all.filter((x) => x.project.id === b.project.id).length };
+  };
+
   /** An archived or trashed task: GET /boards/:id lists only the visible ones. */
   const hiddenTask = async (b: BoardSummary, ref: string): Promise<Task> => {
     const lists = await Promise.all(['archived', 'trash'].map((kind) => api.request<{ tasks: Task[] }>('GET', `/boards/${b.id}/${kind}`)));
@@ -1256,17 +1266,28 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
   server.registerTool(
     'invite_to_board',
     {
-      title: 'Invite someone to a board',
-      description: 'Send an invitation to share a board, with a role.',
+      title: 'Invite someone to a project',
+      description: 'Send an invitation to share a project (through one of its boards), with a role. The invitation gives access to every board of the project.',
       inputSchema: { board: boardArg, email: z.string().email().max(254), role: z.enum(['viewer', 'editor', 'admin']) },
-      annotations: WRITE,
+      annotations: DESTRUCTIVE,
     },
     async (a: { board: string; email: string; role: 'viewer' | 'editor' | 'admin' }) => {
       try {
         const b = await board(a.board);
-        await approver.confirm({ action: 'Invite someone to a board', as: await as(), board: boardLabel(b), details: [['E-mail', a.email], ['Role', a.role]] });
+        const p = await projectOf(b);
+        await approver.confirm({
+          action: 'Invite someone to a project',
+          as: await as(),
+          board: boardLabel(b),
+          details: [
+            ['E-mail', a.email],
+            ['Role', a.role],
+            ['Project', `${p.name} (${p.boards} board${p.boards === 1 ? '' : 's'})`],
+            ['Effect', 'the person gets access to every board of this project'],
+          ],
+        });
         await api.request('POST', `/boards/${b.id}/invites`, { body: { email: a.email.toLowerCase(), role: a.role } });
-        return ok(`Invitation sent to ${a.email} (${a.role}) for ${boardLabel(b)}.`);
+        return ok(`Invitation sent to ${a.email} (${a.role}) for the project ${p.name}, via ${boardLabel(b)}.`);
       } catch (e) {
         return refusal(e, 'invite_to_board');
       }
@@ -1304,13 +1325,14 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
     'set_board_member_role',
     {
       title: 'Change the role of a member',
-      description: 'Give a member of a board another role (viewer, editor, admin).',
+      description: 'Change the role of a member of a project (through one of its boards). The role applies to every board of the project.',
       inputSchema: { board: boardArg, user_id: z.string().min(1), role: z.enum(['viewer', 'editor', 'admin']) },
-      annotations: WRITE,
+      annotations: DESTRUCTIVE,
     },
     async (a: { board: string; user_id: string; role: 'viewer' | 'editor' | 'admin' }) => {
       try {
         const b = await board(a.board);
+        const p = await projectOf(b);
         const out = await api.request<{ members?: SharingMember[] }>('GET', `/boards/${b.id}/sharing`);
         const m = (out.members ?? []).find((x) => x.userId === a.user_id);
         await approver.confirm({
@@ -1320,10 +1342,12 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
           details: [
             ['Member', m ? `${m.name || m.email} <${m.email}>` : a.user_id],
             ['Role', `${m?.role ?? '?'} → ${a.role}`],
+            ['Project', `${p.name} (${p.boards} board${p.boards === 1 ? '' : 's'})`],
+            ['Effect', 'the role applies to every board of this project'],
           ],
         });
         await api.request('PUT', `/boards/${b.id}/members/${a.user_id}`, { body: { role: a.role } });
-        return ok(`${m ? m.name || m.email : a.user_id} is now ${a.role} on ${boardLabel(b)}.`);
+        return ok(`${m ? m.name || m.email : a.user_id} is now ${a.role} on the project ${p.name}.`);
       } catch (e) {
         return refusal(e, 'set_board_member_role');
       }
@@ -1333,8 +1357,8 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
   server.registerTool(
     'remove_board_member',
     {
-      title: 'Remove a member from a board',
-      description: 'Remove someone from a board (they lose access to its tasks).',
+      title: 'Remove a member from a project',
+      description: 'Remove someone from a project (through one of its boards). They lose access to every board of the project.',
       inputSchema: { board: boardArg, user_id: z.string().min(1).optional(), email: z.string().email().optional().describe('Or the e-mail of the member to remove.') },
       annotations: DESTRUCTIVE,
     },
@@ -1342,20 +1366,29 @@ export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolCo
       try {
         if (!a.user_id && !a.email) throw new Error('Give a user_id or an email.');
         const b = await board(a.board);
+        const p = await projectOf(b);
         const out = await api.request<{ members?: SharingMember[] }>('GET', `/boards/${b.id}/sharing`);
         const m = (out.members ?? []).find((x) => (a.user_id && x.userId === a.user_id) || (a.email && x.email.toLowerCase() === a.email.toLowerCase()));
         if (!m) throw new Error(`Nobody matches ${a.user_id ?? a.email} on ${boardLabel(b)}. Call get_board_sharing.`);
+        const self = await ctx.identify().catch(() => ({}) as Identity);
+        const isSelf = self.id === m.userId;
         await approver.confirm({
-          action: 'Remove a member from a board',
+          action: 'Remove a member from a project',
           as: await as(),
           board: boardLabel(b),
           details: [
             ['Member', `${m.name || m.email} <${m.email}> (${m.role})`],
-            ['Effect', 'loses access to this board and its tasks'],
+            ['Project', `${p.name} (${p.boards} board${p.boards === 1 ? '' : 's'})`],
+            [
+              'Effect',
+              isSelf
+                ? 'you leave this project: you lose access to every board, and your assignments, follows and reminders go'
+                : 'loses access to every board of the project, and their assignments, follows and reminders go',
+            ],
           ],
         });
         await api.request('DELETE', `/boards/${b.id}/members/${m.userId}`);
-        return ok(`${m.name || m.email} removed from ${boardLabel(b)}.`);
+        return ok(`${m.name || m.email} removed from the project ${p.name}.`);
       } catch (e) {
         return refusal(e, 'remove_board_member');
       }

@@ -365,6 +365,20 @@ describe('writes are approved first', () => {
     expect(prompts).toHaveLength(3);
   });
 
+  it('says in the approval that sharing a board shares the whole project', async () => {
+    await connect('accept');
+    await call('invite_to_board', { board: 'PROJ', email: 'chloe.petit@example.com', role: 'viewer' });
+    expect(prompts[0]).toContain('Invite someone to a project');
+    expect(prompts[0]).toContain('Project : Projet (1 board)');
+    expect(prompts[0]).toContain('every board of this project');
+    await call('set_board_member_role', { board: 'PROJ', user_id: 'u2', role: 'viewer' });
+    expect(prompts[1]).toContain('Project : Projet (1 board)');
+    expect(prompts[1]).toContain('the role applies to every board of this project');
+    await call('remove_board_member', { board: 'PROJ', user_id: 'u2' });
+    expect(prompts[2]).toContain('Project : Projet (1 board)');
+    expect(prompts[2]).toContain('loses access to every board of the project');
+  });
+
   it('cancels an invitation', async () => {
     await connect('accept');
     const r = await call('cancel_board_invite', { board: 'PROJ', invite_id: 'i1' });
@@ -385,6 +399,9 @@ describe('writes are approved first', () => {
     const byName = Object.fromEntries(tools.map((t) => [t.name, t]));
     expect(byName.trash_task.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     expect(byName.transfer_task.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    // A board invite or role change applies to the whole project: the client must ask.
+    expect(byName.invite_to_board.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
+    expect(byName.set_board_member_role.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     expect(byName.get_board.annotations).toMatchObject({ readOnlyHint: true });
     expect(tools.length).toBe(47);
   });
