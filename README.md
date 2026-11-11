@@ -90,7 +90,7 @@ Open source MCP servers connect AI assistants to the whole workplace:
 npx mcp-twake-ai setup
 ```
 
-[mcp-twake-ai](https://github.com/linagora/mcp-twake-wizard) sets up this server and the other Twake.ai MCP servers for your Twake.ai account: it asks for your email, signs you in at the Twake.ai identity provider (in the browser, or with a code over SSH), and finds the agents on your computer (Claude Code, Hermes, Claude Desktop, Cursor, VS Code) and the services of your account. It then installs pinned versions of the servers, writes their entries in each agent's configuration and checks that each server starts. For any other agent, `mcp-twake-ai export --agent <id>` writes the configuration files.
+[mcp-twake-ai](https://github.com/linagora/mcp-twake-ai) sets up this server and the other Twake.ai MCP servers for your Twake.ai account: it asks for your email, signs you in at the Twake.ai identity provider (in the browser, or with a code over SSH), and finds the agents on your computer (Claude Code, Hermes, Claude Desktop, Cursor, VS Code) and the services of your account. It then installs pinned versions of the servers, writes their entries in each agent's configuration and checks that each server starts. For any other agent, `mcp-twake-ai export --agent <id>` writes the configuration files.
 
 ### Manual installation
 
@@ -119,7 +119,7 @@ TWAKE_PROJECT_TOKEN_COMMAND="/usr/local/bin/mcp-twake-ai token project"   # prin
 TWAKE_PROJECT_OIDC_ISSUER=https://sso.example.com/                         # to name you in the approval prompts
 ```
 
-For Twake.ai, [mcp-twake-ai](https://github.com/linagora/mcp-twake-wizard) provides that command (`mcp-twake-ai token project`); any other command printing this JSON works. Give the command with an absolute path, as some MCP clients do not see your `PATH`. It runs through the system shell (`sh`, or `cmd.exe` on Windows, where paths go in double quotes).
+For Twake.ai, [mcp-twake-ai](https://github.com/linagora/mcp-twake-ai) provides that command (`mcp-twake-ai token project`); any other command printing this JSON works. Give the command with an absolute path, as some MCP clients do not see your `PATH`. It runs through the system shell (`sh`, or `cmd.exe` on Windows, where paths go in double quotes).
 
 Everything is then done as you: tasks, comments and assignments carry your name. Every write is approved by you first (below).
 
