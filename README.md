@@ -84,6 +84,16 @@ Open source MCP servers connect AI assistants to the whole workplace:
 
 ## Installation
 
+### Quick start with mcp-twake-ai (recommended)
+
+```bash
+npx mcp-twake-ai setup
+```
+
+[mcp-twake-ai](https://github.com/linagora/mcp-twake-wizard) sets up this server and the other Twake.ai MCP servers for your Twake.ai account: it asks for your email, signs you in at the Twake.ai identity provider (in the browser, or with a code over SSH), and finds the agents on your computer (Claude Code, Hermes, Claude Desktop, Cursor, VS Code) and the services of your account. It then installs pinned versions of the servers, writes their entries in each agent's configuration and checks that each server starts. For any other agent, `mcp-twake-ai export --agent <id>` writes the configuration files.
+
+### Manual installation
+
 ```bash
 npm install -g mcp-twake-project   # or run it on demand with npx -y mcp-twake-project
 mcp-twake-project check            # tests the configuration
@@ -105,9 +115,11 @@ npm run build          # then run: node build/index.js
 Twake Project accepts the OIDC access tokens of your identity provider when they carry the audience `twake-projects`. Ask your identity provider administrator to add that audience to the OIDC client of your assistant, then give the server a command that prints a fresh access token:
 
 ```bash
-TWAKE_PROJECT_TOKEN_COMMAND="my-token-broker twake-projects --json"   # prints {"access_token": "...", "expires_at": <epoch s>}
-TWAKE_PROJECT_OIDC_ISSUER=https://sso.example.com/                    # to name you in the approval prompts
+TWAKE_PROJECT_TOKEN_COMMAND="/usr/local/bin/mcp-twake-ai token project"   # prints {"access_token": "...", "expires_at": <epoch s>}
+TWAKE_PROJECT_OIDC_ISSUER=https://sso.example.com/                         # to name you in the approval prompts
 ```
+
+For Twake.ai, [mcp-twake-ai](https://github.com/linagora/mcp-twake-wizard) provides that command (`mcp-twake-ai token project`); any other command printing this JSON works. Give the command with an absolute path, as some MCP clients do not see your `PATH`. It runs through the system shell (`sh`, or `cmd.exe` on Windows, where paths go in double quotes).
 
 Everything is then done as you: tasks, comments and assignments carry your name. Every write is approved by you first (below).
 
@@ -168,7 +180,7 @@ One of the three token variables is required. `mcp-twake-project check` tests th
       "args": ["-y", "mcp-twake-project"],
       "env": {
         "TWAKE_PROJECT_URL": "https://projects.example.com",
-        "TWAKE_PROJECT_TOKEN_COMMAND": "/usr/local/bin/my-token-broker twake-projects --json",
+        "TWAKE_PROJECT_TOKEN_COMMAND": "/usr/local/bin/mcp-twake-ai token project",
         "TWAKE_PROJECT_OIDC_ISSUER": "https://sso.example.com/",
         "USER_TIMEZONE": "Europe/Paris"
       }
@@ -182,7 +194,7 @@ One of the three token variables is required. `mcp-twake-project check` tests th
 ```bash
 claude mcp add twake-project --scope user \
   -e TWAKE_PROJECT_URL=https://projects.example.com \
-  -e TWAKE_PROJECT_TOKEN_COMMAND="/usr/local/bin/my-token-broker twake-projects --json" \
+  -e TWAKE_PROJECT_TOKEN_COMMAND="/usr/local/bin/mcp-twake-ai token project" \
   -e TWAKE_PROJECT_OIDC_ISSUER=https://sso.example.com/ \
   -- npx -y mcp-twake-project
 ```
@@ -198,7 +210,7 @@ mcp_servers:
     args: ["-y", "mcp-twake-project"]
     env:
       TWAKE_PROJECT_URL: https://projects.example.com
-      TWAKE_PROJECT_TOKEN_COMMAND: my-token-broker twake-projects --json
+      TWAKE_PROJECT_TOKEN_COMMAND: /usr/local/bin/mcp-twake-ai token project
       TWAKE_PROJECT_OIDC_ISSUER: https://sso.example.com/
       TWAKE_PROJECT_APPROVAL_TIMEOUT_MS: "330000"
       USER_LANGUAGE: fr
