@@ -5,6 +5,11 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      # TypeScript 7 changes the compiler that emits the published JS, and the other
+      # Twake servers stay on 5.x for typescript-eslint: move to it on purpose, for all.
+      - dependency-name: typescript
+        update-types: ["version-update:semver-major"]
     groups:
       dev-dependencies:
         dependency-type: development
