@@ -6,7 +6,7 @@
 
 ## What is it?
 
-`mcp-twake-project` is a [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server. MCP is the open standard that lets AI assistants (Claude Desktop, Claude Code, Hermes Agent, Cursor, VS Code and many others) use external tools. This server exposes your Twake Project to the assistant as **47 tools**: projects, boards, sections and tasks (keys, due dates, deadlines, priorities, assignees, labels, descriptions, comments, history, reminders), saved filters, the agenda and notifications, and actions as you: create a board or a task, plan it, move it, transfer it to another board, assign it, comment it, complete it, archive it, share a board.
+`mcp-twake-project` is a [Model Context Protocol](https://modelcontextprotocol.io) (MCP) server. MCP is the open standard that lets AI assistants (Claude Desktop, Claude Code, Hermes Agent, Cursor, VS Code and many others) use external tools. This server exposes your Twake Project to the assistant as **48 tools**: projects, boards, sections and tasks (keys, due dates, deadlines, priorities, assignees, labels, descriptions, comments, history, reminders), saved filters, the agenda and notifications, and actions as you: create a board or a task, plan it, move it, transfer it to another board, assign it, comment it, complete it, archive it, share a board.
 
 Twake Project organises the work of a team into projects and boards, each task carrying a readable key (for example `ATLAS-12`). The server talks to the Twake Project backend API, as **you**, with an OIDC access token from your identity provider.
 
@@ -39,9 +39,9 @@ Open source MCP servers connect AI assistants to the whole workplace:
 
 ## Features
 
-### 47 MCP tools
+### 48 MCP tools
 
-21 read-only, 26 that write and ask for your approval first (⚠️).
+21 read-only, 26 that write and ask for your approval first (⚠️), and `approve_batch`.
 
 | Category | Tools |
 |---|---|
@@ -56,6 +56,7 @@ Open source MCP servers connect AI assistants to the whole workplace:
 | Reminders ⚠️ | `add_reminder`, `remove_reminder` ⚠️ |
 | Sharing ⚠️ | `invite_to_board`, `cancel_board_invite` ⚠️, `set_board_member_role`, `remove_board_member` ⚠️ |
 | Notifications ⚠️ | `mark_notifications_read` |
+| Approval | `approve_batch` (one approval for a series of writes, see [below](#approving-a-series-of-writes-at-once)) |
 
 ⚠️ = asks for your approval first (and for the deletions and the sharing writes, `destructiveHint`). Read tools carry `readOnlyHint`. The server never deletes a board, and `trash_task` is recoverable with `restore_task`.
 
@@ -237,6 +238,10 @@ npx mcp-twake-project call create_task --json @task.json
 - These rules stop an agent that follows instructions; they cannot stop a program that hides that it is an agent, or rewrites `cli.json`, under your account.
 - With [mcp-twake-ai](https://github.com/linagora/mcp-twake-ai), `npx mcp-twake-ai call project …` does the same with your Twake.ai sign-in.
 
+## Approving a series of writes at once
+
+Before a series of writes (several tasks, several comments or assignments), an agent can ask you once for the whole list with `approve_batch`: you see every action, numbered, in one approval. Each call that then carries the `batchId` and matches a listed action exactly runs without another question, once, within 15 minutes. A call that is not in the list, or whose target changed since you approved, asks as usual. A batch approves exactly what each action's approval text shows; it belongs to the session that approved it, and is forgotten when that session ends. With `TWAKE_PROJECT_APPROVAL=client`, there is no batch.
+
 ## Recommended safe configuration
 
 - Use a token that expires (a token command), not a static one; revoke it when you stop using the server.
@@ -279,7 +284,7 @@ npx mcp-twake-project call create_task --json @task.json
 npm ci
 npm run typecheck        # sources and tests
 npm run build
-npm test                 # Vitest: units, the 47 tools against a recording fake API,
+npm test                 # Vitest: units, the 48 tools against a recording fake API,
                          # and the built server over stdio against a fake API and identity provider
 ```
 

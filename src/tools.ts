@@ -5,6 +5,7 @@ import { Approver, ApprovalUnavailable, NotApproved, type ApprovalMode, type Lan
 import type { Board, BoardSummary, ListedTask, Project, ProjectClient, Section, Task } from './project.js';
 import { boardDocument, boardLine, projectLine, sectionLine, taskLine, when } from './format.js';
 import type { Identity } from './identity.js';
+import { installBatch } from './batch/index.js';
 
 export interface ToolContext {
   appUrl: string;
@@ -51,8 +52,46 @@ function refusal(e: unknown, what: string) {
   return fail(`Error: ${err.message}${err.hint ? `\n${err.hint}` : ''}`);
 }
 
+/** The tools that ask through Approver.confirm before writing: the ones approve_batch accepts. */
+export const WRITE_TOOLS = [
+  'create_board',
+  'update_board',
+  'move_board',
+  'create_section',
+  'update_section',
+  'delete_section',
+  'create_task',
+  'update_task',
+  'move_task',
+  'complete_task',
+  'assign_task',
+  'set_task_description',
+  'add_comment',
+  'create_label',
+  'set_task_labels',
+  'add_reminder',
+  'remove_reminder',
+  'mark_notifications_read',
+  'transfer_task',
+  'invite_to_board',
+  'cancel_board_invite',
+  'set_board_member_role',
+  'remove_board_member',
+  'archive_task',
+  'restore_task',
+  'trash_task',
+] as const;
+
 export function registerTools(server: McpServer, api: ProjectClient, ctx: ToolContext): void {
   const approver = new Approver(server.server, ctx.approval, ctx.language, ctx.approvalTimeoutMs);
+  // approve_batch, and batchId on every write tool: installed before the tools are registered (spec §5)
+  installBatch(server, {
+    writeTools: WRITE_TOOLS,
+    z,
+    confirm: (message) => approver.confirmText(message),
+    clientMode: () => approver.mode === 'client',
+    language: () => approver.lang,
+  });
 
   const as = async (): Promise<string> => {
     const id = await ctx.identify().catch(() => ({}) as Identity);
