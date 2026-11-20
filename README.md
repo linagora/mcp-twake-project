@@ -35,6 +35,8 @@ Open source MCP servers connect AI assistants to the whole workplace:
 - **Prepare**: "Add a task 'Send the quote' to the Atlas board, due Thursday, priority high, assigned to Bob".
 - **Follow**: read a task's description, its comments and its history before answering.
 - **Act for you, with your OK each time**: "Move these three tasks to Done", "comment on ATLAS-12 that the client answered", "create a board for the new project".
+- **One approval for a series of writes**: before several writes (several tasks, several comments or assignments), the assistant can ask you once for the exact list with `approve_batch`. Each listed call then runs without another question, once, within 15 minutes, in the session that approved it; anything else, or anything changed since, asks as usual (see [Approving a series of writes at once](#approving-a-series-of-writes-at-once)).
+- **From the command line**: `npx mcp-twake-project call <tool>` and `npx mcp-twake-project tools` run every tool from a terminal or a script, with the server's configuration. A write you type in a terminal is approved without a question (`--i` asks first); a write started by an agent is refused, since agents write through their MCP tools, which ask you; without a terminal (cron), a write needs `--yes --as <name>`, for a name you allowed once in a terminal (see [From the command line](#from-the-command-line)).
 - **Sovereignty**: the server runs next to your assistant and talks directly to your Twake Project.
 
 ## Features
