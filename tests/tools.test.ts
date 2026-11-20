@@ -403,6 +403,128 @@ describe('writes are approved first', () => {
     expect(byName.invite_to_board.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     expect(byName.set_board_member_role.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: true });
     expect(byName.get_board.annotations).toMatchObject({ readOnlyHint: true });
-    expect(tools.length).toBe(47);
+    expect(tools.length).toBe(48); // 47 + approve_batch
+    expect(byName.approve_batch.annotations).toMatchObject({ readOnlyHint: false, destructiveHint: false, openWorldHint: false });
+  });
+});
+
+describe('approve_batch: one approval for a series of writes', () => {
+  /** One call per family of write tools: tasks, task changes, comments, labels, reminders, sections, boards, sharing, hidden tasks. */
+  const WRITES: [string, Record<string, unknown>][] = [
+    ['create_task', { board: 'PROJ', title: 'Nouvelle tâche', section: 'À faire' }],
+    ['update_task', { board: 'PROJ', task: 'PROJ-1', priority: 4 }],
+    ['move_task', { board: 'PROJ', task: 'PROJ-1', section: 'À faire' }],
+    ['complete_task', { board: 'PROJ', task: 'PROJ-1', state: 'completed' }],
+    ['assign_task', { board: 'PROJ', task: 'PROJ-1', user_ids: ['u1'] }],
+    ['add_comment', { board: 'PROJ', task: 'PROJ-1', body: 'Bien reçu' }],
+    ['set_task_labels', { board: 'PROJ', task: 'PROJ-1', labels: ['urgent'] }],
+    ['add_reminder', { board: 'PROJ', task: 'PROJ-1', before_minutes: 30 }],
+    ['update_board', { board: 'PROJ', layout: 'list' }],
+    ['invite_to_board', { board: 'PROJ', email: 'chloe.petit@example.com', role: 'editor' }],
+    ['trash_task', { board: 'PROJ', task: 'PROJ-1' }],
+  ];
+  const task1 = { board: 'PROJ', title: 'Première tâche' };
+  const task2 = { board: 'PROJ', title: 'Seconde tâche' };
+
+  async function connectWith(answers: ('accept' | 'decline')[], approval: 'elicit' | 'client' = 'elicit') {
+    prompts = [];
+    api = new FakeApi();
+    const server = new McpServer({ name: 'test', version: '1' });
+    registerTools(server, api as unknown as ProjectClient, {
+      appUrl: 'https://projects.example.com',
+      timeZone: 'Europe/Paris',
+      approval,
+      approvalTimeoutMs: 1000,
+      language: 'fr',
+      identify: async () => ({ id: 'u0', email: 'alice.martin@example.com', name: 'Alice MARTIN' }),
+    });
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    await server.connect(st);
+    client = new Client({ name: 'c', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+    client.setRequestHandler(ElicitRequestSchema, async (r) => {
+      prompts.push(r.params.message);
+      return { action: answers.shift() ?? 'decline' };
+    });
+    await client.connect(ct);
+  }
+  const batchOf = async (actions: { tool: string; arguments: Record<string, unknown> }[]) => {
+    const r = await call('approve_batch', { actions });
+    return { ...r, batchId: /"batchId":"([0-9a-f]{32})"/.exec(r.text)?.[1] };
+  };
+
+  it('lists the tools that ask as WRITE_TOOLS', async () => {
+    const { WRITE_TOOLS } = await import('../src/tools.js');
+    await connectWith([]);
+    const tools = (await client.listTools()).tools;
+    const writers = tools.filter((t) => !t.annotations?.readOnlyHint && t.name !== 'approve_batch').map((t) => t.name);
+    expect([...WRITE_TOOLS].sort()).toEqual(writers.sort());
+  });
+
+  it('creates two tasks after one approval of the batch', async () => {
+    await connectWith(['accept']);
+    const b = await batchOf([
+      { tool: 'create_task', arguments: task1 },
+      { tool: 'create_task', arguments: task2 },
+    ]);
+    expect(b.batchId, b.text).toBeDefined();
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain('2 actions');
+    expect(prompts[0]).toContain('[1/2] Twake Project : Create a task');
+    expect(prompts[0]).toContain('Seconde tâche');
+    expect(writes()).toEqual([]);
+    expect((await call('create_task', { ...task1, batchId: b.batchId })).isError).toBe(false);
+    expect((await call('create_task', { ...task2, batchId: b.batchId })).isError).toBe(false);
+    expect(prompts).toHaveLength(1);
+    expect(writes()).toHaveLength(2);
+  });
+
+  it('asks again for a create_task whose arguments are not in the batch', async () => {
+    await connectWith(['accept', 'accept']);
+    const b = await batchOf([{ tool: 'create_task', arguments: task1 }]);
+    const r = await call('create_task', { ...task1, title: 'Autre chose', batchId: b.batchId });
+    expect(prompts).toHaveLength(2);
+    expect(prompts[1]).toContain('Autre chose');
+    expect(r.text).toContain('lot non utilisé');
+    expect(writes()).toHaveLength(1);
+  });
+
+  it('writes nothing while preparing the batch', async () => {
+    await connectWith(['decline']);
+    const b = await batchOf(WRITES.map(([tool, args]) => ({ tool, arguments: args })));
+    expect(b.batchId, b.text).toBeUndefined();
+    expect(b.text).toContain('Lot non approuvé');
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toContain(`${WRITES.length} actions`);
+    expect(writes()).toEqual([]);
+  });
+
+  it('refuses a batch with a read tool', async () => {
+    await connectWith(['accept']);
+    const b = await batchOf([
+      { tool: 'create_task', arguments: task1 },
+      { tool: 'search_tasks', arguments: { query: 'note' } },
+    ]);
+    expect(b.isError).toBe(true);
+    expect(b.text).toContain('action 2.');
+    expect(prompts).toEqual([]);
+  });
+
+  it.each(WRITES)('%s runs once approved in a batch, without another question', async (tool, args) => {
+    await connectWith(['accept']);
+    const b = await batchOf([{ tool, arguments: args }]);
+    expect(b.batchId, b.text).toBeDefined();
+    expect(writes()).toEqual([]);
+    const r = await call(tool, { ...args, batchId: b.batchId });
+    expect(r.isError, r.text).toBe(false);
+    expect(r.text).not.toContain('lot non utilisé');
+    expect(prompts).toHaveLength(1);
+    expect(writes().length).toBeGreaterThan(0);
+  });
+
+  it('creates no batch with TWAKE_PROJECT_APPROVAL=client', async () => {
+    await connectWith([], 'client');
+    const b = await batchOf([{ tool: 'create_task', arguments: task1 }]);
+    expect(b.batchId).toBeUndefined();
+    expect(b.text).toContain('client');
   });
 });
