@@ -221,6 +221,22 @@ mcp_servers:
       timeout: 300
 ```
 
+## From the command line
+
+Every tool of this server can be called from a terminal or a script, with the same configuration (`TWAKE_PROJECT_*` variables) as the server:
+
+```sh
+npx mcp-twake-project tools                      # one line per tool
+npx mcp-twake-project call search_tasks --arg query=invoice
+npx mcp-twake-project call create_task --json @task.json
+```
+
+- `--arg key=value` is converted to the type the tool gives `key`; `--json` takes the whole arguments object (`@file`, or `-` for stdin). The result goes to stdout (`--json-output` for the raw result), everything else to stderr.
+- Exit codes: 0 done, 1 the tool answered with an error, 2 wrong command or argument, 3 a write was not approved, 4 the server could not be reached.
+- **Writes:** typed by you in a terminal, a write is approved without a question (`--i` asks first). Started by an agent (`CLAUDECODE` or `HERMES_HOME` set), a write is refused: agents write through their MCP tools, which ask you. Without a terminal (cron), a write is refused unless it passes `--yes --as <name>` for a name you allowed once, in a terminal, with `npx mcp-twake-project allow-unattended <name>`. The allowed names are shared by the six Twake.ai servers, in `~/.config/twake-ai/cli.json` (`%USERPROFILE%\AppData\Roaming\twake-ai\cli.json` on Windows).
+- These rules stop an agent that follows instructions; they cannot stop a program that hides that it is an agent, or rewrites `cli.json`, under your account.
+- With [mcp-twake-ai](https://github.com/linagora/mcp-twake-ai), `npx mcp-twake-ai call project …` does the same with your Twake.ai sign-in.
+
 ## Recommended safe configuration
 
 - Use a token that expires (a token command), not a static one; revoke it when you stop using the server.
